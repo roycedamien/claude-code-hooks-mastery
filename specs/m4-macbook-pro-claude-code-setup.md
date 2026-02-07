@@ -124,6 +124,9 @@ Before diving into steps, here is every dependency the hooks ecosystem requires,
 | `just` | Latest | Optional | Command runner for install-and-maintain `justfile` |
 | `ollama` | Latest | **YES** | Local LLM inference — no API key, no cost. M4 Neural Engine accelerated |
 | `whisper-cpp` | Latest | **YES** | Local speech-to-text — no API key, Core ML accelerated on M4. ~27x real-time |
+| `sdl2` | Latest | **YES** | Audio capture library — required by whisper.cpp real-time streaming modes |
+| `sox` | Latest | **YES** | Command-line audio Swiss Army knife — recording, conversion, piping |
+| `blackhole-2ch` | Latest | **YES** | Virtual audio loopback — route app/system audio to whisper.cpp. Zero latency |
 | `docker` | Latest | Optional | Containerized services (databases, CI testing). Not needed by hooks |
 
 ### Python Packages (auto-resolved by `uv` via PEP 723 headers)
@@ -166,6 +169,7 @@ Before diving into steps, here is every dependency the hooks ecosystem requires,
 | **GitHub** | [github.com](https://github.com) | Free | `gh auth login` — issue fetching, PR workflows | **YES** |
 | **Ollama** | [ollama.com](https://ollama.com) | **No account needed** | Fully local LLM — no signup, no API key, no cost | N/A |
 | **whisper.cpp** | [github.com/ggml-org/whisper.cpp](https://github.com/ggml-org/whisper.cpp) | **No account needed** | Fully local STT — no signup, no API key, no cost | N/A |
+| **BlackHole** | [existential.audio/blackhole](https://existential.audio/blackhole/) | **No account needed** | Virtual audio routing — free, open source | N/A |
 | **OpenAI** | [platform.openai.com](https://platform.openai.com) | $5 free credit (new accounts) | TTS voice, LLM completion messages in `stop.py` | Optional |
 | **ElevenLabs** | [elevenlabs.io](https://elevenlabs.io) | 10k chars/month free | Premium TTS voices | Optional |
 
@@ -177,8 +181,10 @@ Before diving into steps, here is every dependency the hooks ecosystem requires,
 |---------|--------|
 | Apple Silicon (ARM64) | All tools have native ARM64 builds. No Rosetta 2 needed. |
 | Audio output for TTS | macOS AVFoundation is built-in. `pyttsx3` uses it automatically. |
-| Audio input for STT | Built-in microphone + Core Audio. whisper.cpp uses it natively. Install `sox` for real-time mic recording. |
+| Audio input for STT | Built-in microphone + Core Audio. whisper.cpp uses it via SDL2. `sox` for recording/piping. |
+| Audio routing | macOS has no built-in audio loopback. BlackHole provides zero-latency virtual routing between apps. |
 | Core ML (Neural Engine) | whisper.cpp and Ollama both leverage the M4 ANE for hardware acceleration. macOS Sonoma 14+ recommended. |
+| Aggregate Devices | Created in Audio MIDI Setup to combine mic + BlackHole for simultaneous capture. |
 | File locking (`fcntl`) | Built into Python on macOS/Unix. Used by `tts_queue.py`. |
 | SQLite | Built into `bun:sqlite` and Python stdlib. No install needed. |
 
@@ -235,7 +241,8 @@ IMPORTANT: Execute every step in order, top to bottom.
 
 - Install all tools in one batch:
   ```bash
-  brew install git gh uv python@3.13 node bun just ollama whisper-cpp
+  brew install git gh uv python@3.13 node bun just ollama whisper-cpp sdl2 sox
+  brew install --cask blackhole-2ch
   ```
 - What each tool does:
   | Tool | Purpose | Used By |
@@ -249,6 +256,9 @@ IMPORTANT: Execute every step in order, top to bottom.
   | `just` | Command runner (like make, but simpler) | install-and-maintain `justfile` |
   | `ollama` | Local LLM — runs on M4 Neural Engine, no API key | Agent naming, task summaries, completion messages |
   | `whisper-cpp` | Local speech-to-text — Core ML accelerated, no API key | Voice input, audio transcription |
+  | `sdl2` | Audio capture library | Required by whisper.cpp `stream` and `talk-llama` modes |
+  | `sox` | Command-line audio recorder/converter | Real-time mic recording, piping audio to whisper |
+  | `blackhole-2ch` | Virtual audio loopback driver (zero latency) | Route system/app audio to whisper.cpp for transcription |
 
 - Start Ollama as a background service (auto-starts on boot):
   ```bash
@@ -272,6 +282,14 @@ IMPORTANT: Execute every step in order, top to bottom.
   # Or the small model (~466MB) — better accuracy, still fast on M4
   whisper-cpp-download-ggml-model small
   ```
+
+- Set up BlackHole for audio routing:
+  - Open **Audio MIDI Setup** (Cmd+Space, type "Audio MIDI Setup")
+  - Click the **+** button in the bottom left → **Create Aggregate Device**
+  - Check both your **Built-in Microphone** and **BlackHole 2ch**
+  - Name it "Whisper Input" (or whatever you prefer)
+  - This lets you capture both mic audio AND system/app audio simultaneously
+  - To route a specific app's audio to whisper.cpp, set that app's output to BlackHole 2ch
 
 - Authenticate GitHub CLI:
   ```bash
@@ -695,22 +713,65 @@ Copy and adapt these hooks from this repo to `~/.claude/hooks/`:
   ```
   This creates an ANE-optimized model that runs ~3x faster than the standard model on Apple Silicon.
 
+- **Real-time microphone streaming** (`whisper-stream`):
+  whisper.cpp includes a built-in streaming mode that continuously listens to your mic and transcribes in real-time. Requires SDL2 (installed in Step 3).
+  ```bash
+  # Real-time transcription from your default microphone
+  whisper-stream -m /opt/homebrew/share/whisper-cpp/models/ggml-base.bin -t 4 --step 500 --length 5000
+
+  # With Voice Activity Detection (only transcribes when you speak)
+  whisper-stream -m /opt/homebrew/share/whisper-cpp/models/ggml-base.bin --vad
+  ```
+
+- **Voice-to-LLM pipeline** (`whisper-talk-llama`):
+  This is the full voice assistant pipeline built into whisper.cpp — you speak, Whisper transcribes, LLaMA generates a response, and TTS reads it back. All local.
+  ```bash
+  # Voice → Whisper STT → LLaMA → macOS TTS (say command)
+  whisper-talk-llama \
+    -mw /opt/homebrew/share/whisper-cpp/models/ggml-base.bin \
+    -ml /path/to/llama-model.gguf \
+    --speak "say"
+  ```
+  - `-mw` = Whisper model for speech-to-text
+  - `-ml` = LLaMA model for text generation (use a GGUF model from Ollama's cache or download separately)
+  - `--speak` = TTS command (macOS `say` works out of the box)
+  - `--session cache.bin` = Cache LLaMA state for faster subsequent interactions
+
+- **Audio routing with BlackHole** (capturing system/app audio):
+  By default, whisper.cpp listens to your microphone. To transcribe audio from other apps (meetings, YouTube, podcasts), route through BlackHole:
+  1. Set the app's audio output to **BlackHole 2ch** (in the app's audio settings or System Settings → Sound)
+  2. Run whisper.cpp with BlackHole as input (it picks up the default input device, or use the Aggregate Device you created in Step 3)
+  3. To hear audio AND transcribe simultaneously, use the **Aggregate Device** (BlackHole + speakers)
+
+  Common use cases:
+  | Scenario | Audio Route |
+  |----------|------------|
+  | Transcribe your voice | Mic → whisper.cpp (default, no BlackHole needed) |
+  | Transcribe a Zoom call | Zoom audio → BlackHole → whisper.cpp |
+  | Transcribe a YouTube video | Browser audio → BlackHole → whisper.cpp |
+  | Transcribe both sides of a call | Aggregate Device (Mic + BlackHole) → whisper.cpp |
+
 - **Alternatives to consider later**:
   | Tool | Language | Notes |
   |------|----------|-------|
   | [WhisperKit](https://github.com/argmaxinc/WhisperKit) | Swift | Native Apple framework, real-time streaming |
   | [mlx-whisper](https://github.com/ml-explore/mlx-examples) | Python | Apple MLX framework, optimized for Apple Silicon |
   | `openai-whisper` | Python | Original open-source model, heavier deps |
+  | [Loopback](https://rogueamoeba.com/loopback/) | macOS app | Paid alternative to BlackHole with GUI routing |
 
 #### The Local AI Stack Summary
 
-With Ollama + whisper.cpp + pyttsx3, you have a complete **voice I/O pipeline** running entirely on your M4 with zero cloud dependencies:
+With Ollama + whisper.cpp + BlackHole + pyttsx3, you have a complete **voice I/O pipeline** running entirely on your M4 with zero cloud dependencies:
 
 ```
-Voice Input → [whisper.cpp: STT] → Text → [Ollama: LLM] → Response → [pyttsx3: TTS] → Audio Output
+                                    ┌─────────────────┐
+  Microphone ──→                    │                 │
+                 ├──→ whisper.cpp ──→ Text ──→ Ollama ──→ Response ──→ pyttsx3 ──→ Speaker
+  App Audio ──→  │    (STT)         │         (LLM)       (TTS)
+  via BlackHole ─┘                  └─────────────────┘
 ```
 
-All three run locally, require no API keys, and leverage the M4's Neural Engine.
+All components run locally, require no API keys, and leverage the M4's Neural Engine. BlackHole adds the ability to capture any app's audio for transcription.
 
 ---
 
