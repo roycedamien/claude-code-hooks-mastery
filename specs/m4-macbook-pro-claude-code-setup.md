@@ -129,6 +129,18 @@ Before diving into steps, here is every dependency the hooks ecosystem requires,
 | `blackhole-2ch` | Latest | **YES** | Virtual audio loopback — route app/system audio to whisper.cpp. Zero latency |
 | `docker` | Latest | Optional | Containerized services (databases, CI testing). Not needed by hooks |
 
+### Developer Tools (installed via Homebrew Cask + npm)
+
+| Tool | Install | Required? | What It Does |
+|------|---------|-----------|-------------|
+| **VS Code** | `brew install --cask visual-studio-code` | **YES** | Code editor — Claude Code extension, Continue.dev for local AI |
+| **iTerm2** | `brew install --cask iterm2` | **YES** | Terminal — split panes, search, profiles. Essential for hook debugging |
+| **Warp** | `brew install --cask warp` | Recommended | Modern terminal with AI, blocks-based output |
+| **Raycast** | `brew install --cask raycast` | **YES** | Spotlight replacement — clipboard history, snippets, window management |
+| **LM Studio** | `brew install --cask lm-studio` | Recommended | GUI for local LLMs — MLX engine, model browser, faster than Ollama for single-user |
+| **Continue.dev** | VS Code extension | Recommended | Local AI code completion via Ollama/LM Studio — no cloud |
+| **Exo** | `pip install exo` | Optional | Distribute LLMs across Apple devices (M4 Mac + iPhone 15 Pro Max) |
+
 ### Python Packages (auto-resolved by `uv` via PEP 723 headers)
 
 > **How this works**: Every hook script has a `# dependencies = [...]` block in its header. When `uv run --script` executes the hook, `uv` automatically downloads, caches, and resolves these packages. You do NOT need to `pip install` them manually. First run of each hook is slightly slower (~2-5s) while uv caches; subsequent runs are instant.
@@ -337,7 +349,59 @@ IMPORTANT: Execute every step in order, top to bottom.
 
 ---
 
-### 5. Create Global Directory Structure
+### 5. Install Developer Tools
+**Why**: You need a code editor, a proper terminal, and productivity tools. These are the daily drivers everything else sits on top of.
+
+- Install all developer GUI apps:
+  ```bash
+  brew install --cask visual-studio-code iterm2 warp raycast lm-studio
+  ```
+
+- **What each tool does**:
+  | Tool | Why You Need It |
+  |------|----------------|
+  | **VS Code** | Code editor with Claude Code extension + Continue.dev for local AI completion |
+  | **iTerm2** | Split panes, search, profiles, triggers — essential for watching hook logs in real-time |
+  | **Warp** | Modern terminal with AI assistance, blocks-based output — good complement to iTerm2 |
+  | **Raycast** | Replaces Spotlight — clipboard history, window management, snippets, app launcher |
+  | **LM Studio** | GUI for browsing/downloading/testing local LLMs with MLX engine (faster than Ollama for interactive use) |
+
+- Install the **Continue.dev** extension in VS Code:
+  - Open VS Code → Extensions (Cmd+Shift+X)
+  - Search for "Continue" → Install
+  - Configure it to use your local Ollama endpoint:
+    ```json
+    {
+      "models": [
+        {
+          "title": "Qwen Coder (Local)",
+          "provider": "ollama",
+          "model": "qwen2.5-coder:3b"
+        }
+      ],
+      "tabAutocompleteModel": {
+        "title": "Qwen Autocomplete",
+        "provider": "ollama",
+        "model": "qwen2.5-coder:3b"
+      }
+    }
+    ```
+  - This gives you **local AI code completion** in VS Code — no cloud, no API key, powered by Ollama
+
+- **Raycast first launch**:
+  - Open Raycast → it will ask to replace Spotlight
+  - Grant accessibility permissions
+  - Recommended extensions: clipboard history, window management, GitHub
+
+- **LM Studio first launch**:
+  - Open LM Studio → browse the model catalog
+  - It uses the **MLX engine** on Apple Silicon — more memory-efficient than Ollama's llama.cpp backend
+  - Exposes an OpenAI-compatible API on `http://localhost:1234` (same format as Ollama)
+  - Use for interactive model exploration; keep Ollama for automated hook usage
+
+---
+
+### 6. Create Global Directory Structure
 **Why**: Global hooks live in `~/.claude/` and apply to every project you open with Claude Code.
 
 - Create the directory tree:
@@ -351,7 +415,7 @@ IMPORTANT: Execute every step in order, top to bottom.
 
 ---
 
-### 6. Set Up Global Environment Variables
+### 7. Set Up Global Environment Variables
 **Why**: Hooks that call LLM APIs or TTS services need API keys. These go in a dotfile, never in a repo.
 
 - Create `~/.env` with your API keys:
@@ -378,7 +442,7 @@ IMPORTANT: Execute every step in order, top to bottom.
 
 ---
 
-### 7. Pre-Warm Python Dependency Cache
+### 8. Pre-Warm Python Dependency Cache
 **Why**: Every hook declares its Python dependencies inline (PEP 723). The first time `uv run` executes a hook, it downloads and caches those packages — adding 2-5 seconds. Pre-warming ensures all hooks run instantly from the start.
 
 - Pre-warm all packages the hooks will need:
@@ -405,7 +469,7 @@ IMPORTANT: Execute every step in order, top to bottom.
 
 ---
 
-### 8. Install Global Security Hook (PreToolUse)
+### 9. Install Global Security Hook (PreToolUse)
 **Why**: This is the most important global hook. It blocks dangerous `rm -rf` commands and prevents `.env` file access across ALL projects. Adapted from `claude-code-hooks-mastery/.claude/hooks/pre_tool_use.py`.
 
 - Copy the security hook to global location:
@@ -422,7 +486,7 @@ IMPORTANT: Execute every step in order, top to bottom.
 
 ---
 
-### 9. Install Global Session & Lifecycle Hooks
+### 10. Install Global Session & Lifecycle Hooks
 **Why**: These provide awareness of what's happening across all Claude Code sessions.
 
 Copy and adapt these hooks from this repo to `~/.claude/hooks/`:
@@ -449,7 +513,7 @@ Copy and adapt these hooks from this repo to `~/.claude/hooks/`:
 
 ---
 
-### 10. Install Global Status Line
+### 11. Install Global Status Line
 **Why**: The status line shows real-time info at the bottom of your terminal while Claude Code runs — git branch, context window usage, cost tracking, etc.
 
 - Copy the recommended status line (v6 — context window usage bar):
@@ -471,7 +535,7 @@ Copy and adapt these hooks from this repo to `~/.claude/hooks/`:
 
 ---
 
-### 11. Wire Global Settings
+### 12. Wire Global Settings
 **Why**: `~/.claude/settings.json` tells Claude Code which hooks to run and when. Without this file, the hook scripts are just idle Python files.
 
 - Create `~/.claude/settings.json`:
@@ -571,7 +635,7 @@ Copy and adapt these hooks from this repo to `~/.claude/hooks/`:
 
 ---
 
-### 12. Test the Global Setup
+### 13. Test the Global Setup
 **Why**: Verify all hooks fire correctly before building the per-project layer.
 
 - Navigate to any directory and launch Claude Code:
@@ -595,7 +659,7 @@ Copy and adapt these hooks from this repo to `~/.claude/hooks/`:
 
 ---
 
-### 13. Clone the IndyDevDan Repos
+### 14. Clone the IndyDevDan Repos
 **Why**: These are your reference implementations and source material for per-project hooks.
 
 - Create a workspace directory:
@@ -613,7 +677,7 @@ Copy and adapt these hooks from this repo to `~/.claude/hooks/`:
 
 ---
 
-### 14. Set Up the Install-and-Maintain Pattern
+### 15. Set Up the Install-and-Maintain Pattern
 **Why**: This is the per-project bootstrapping system. When you start a new project, you copy this `.claude/` skeleton and run `claude --init` to set everything up automatically.
 
 - The pattern from `disler/install-and-maintain` uses three hooks:
@@ -643,7 +707,7 @@ Copy and adapt these hooks from this repo to `~/.claude/hooks/`:
 
 ---
 
-### 15. Local AI Configuration Reference (Ollama + Whisper)
+### 16. Local AI Configuration Reference (Ollama + Whisper + LM Studio)
 **Note**: Both tools were installed in Step 3. This section provides detailed configuration and model management.
 
 #### Ollama (Local LLM — Text Generation)
@@ -661,9 +725,28 @@ Copy and adapt these hooks from this repo to `~/.claude/hooks/`:
   | llama3.2:8b | ~5GB | ~35 tok/s | Task summaries, completion messages |
   | gpt-oss:20b | ~12GB | ~15 tok/s | Richer responses (needs 24GB+ RAM) |
 
-- Pull additional models later as needed:
+- **Coding-specific models** (for Continue.dev and direct prompting):
   ```bash
-  ollama pull gpt-oss:20b          # Larger model, M4 Pro/Max with 24GB+
+  # Fast autocomplete — 16GB M4
+  ollama pull qwen2.5-coder:3b
+
+  # Code review, refactoring — 24GB+ M4 Pro
+  ollama pull qwen2.5-coder:14b
+
+  # Near-GPT-4 coding — 48GB+ M4 Max
+  ollama pull qwen2.5-coder:32b
+  ```
+
+  | Model | Size | RAM | Best For |
+  |-------|------|-----|----------|
+  | `qwen2.5-coder:3b` | ~2GB | 16GB | Tab autocomplete in VS Code via Continue.dev |
+  | `qwen2.5-coder:14b` | ~9GB | 24GB+ | Refactoring, code review, explaining code |
+  | `qwen2.5-coder:32b` | ~20GB | 48GB+ | Complex generation, architecture decisions |
+  | `deepseek-coder-v2:16b` | ~10GB | 24GB+ | Strong alternative to Qwen for coding |
+
+- Pull additional general models later as needed:
+  ```bash
+  ollama pull gpt-oss:20b          # Larger general model, M4 Pro/Max with 24GB+
   ```
 
 - Verify Ollama is running:
@@ -671,6 +754,22 @@ Copy and adapt these hooks from this repo to `~/.claude/hooks/`:
   ollama list                      # Shows downloaded models
   curl http://localhost:11434/v1/models  # API responds
   ```
+
+#### LM Studio (GUI Model Explorer — MLX Engine)
+
+- **Ollama vs LM Studio**: They serve different purposes and complement each other:
+  | | Ollama | LM Studio |
+  |---|---|---|
+  | **Interface** | CLI (`ollama run`) | GUI — drag-and-drop model browser |
+  | **Engine** | llama.cpp (Metal GPU) | **MLX** — Apple's ML framework, more memory-efficient |
+  | **API** | `http://localhost:11434` | `http://localhost:1234` |
+  | **Best for** | Automation (hooks, Continue.dev, scripts) | Exploring models, tweaking parameters |
+  | **Open source** | Yes | No (closed source) |
+  | **Concurrent requests** | Better (batching) | Single-user |
+
+- **Recommended workflow**: Use LM Studio to discover and test models, then pull the ones you like into Ollama for automated use by hooks and Continue.dev.
+
+- LM Studio also works as a Continue.dev backend — in Continue's config, just change the provider URL to `http://localhost:1234`.
 
 #### whisper.cpp (Local STT — Speech-to-Text)
 
@@ -775,7 +874,7 @@ All components run locally, require no API keys, and leverage the M4's Neural En
 
 ---
 
-### 16. (Optional) Configure MCP Servers
+### 17. (Optional) Configure MCP Servers
 **Why**: MCP (Model Context Protocol) servers extend Claude Code with external tool access — web scraping, TTS, database queries, etc.
 
 - Create `~/.claude/.mcp.json` for global MCP servers:
@@ -801,7 +900,7 @@ All components run locally, require no API keys, and leverage the M4's Neural En
 
 ---
 
-### 17. (Optional) Set Up Observability
+### 18. (Optional) Set Up Observability
 **Why**: `disler/claude-code-hooks-multi-agent-observability` adds a real-time monitoring dashboard for agent activity. Useful when running complex multi-agent workflows.
 
 - Clone and review:
@@ -813,7 +912,7 @@ All components run locally, require no API keys, and leverage the M4's Neural En
 
 ---
 
-### 18. (Optional) Install Docker
+### 19. (Optional) Install Docker
 **Why**: Docker is not needed by any hooks or Claude Code features, but many real-world projects use it for databases, microservices, CI pipeline testing, and devcontainers.
 
 - Install Docker Desktop for Mac:
@@ -846,7 +945,37 @@ All components run locally, require no API keys, and leverage the M4's Neural En
 
 ---
 
-### 19. Validate the Complete Setup
+### 20. (Optional) Set Up Exo for Distributed Inference (M4 + iPhone)
+**Why**: [Exo](https://github.com/exo-explore/exo) lets you distribute a single LLM across multiple Apple devices. Your M4 MacBook Pro + iPhone 15 Pro Max can pool their memory and compute to run larger models than either device could alone.
+
+- **Your hardware**:
+  | Device | Chip | ML Memory | Role |
+  |--------|------|-----------|------|
+  | M4 MacBook Pro | M4 | 16-48GB unified | Primary node (bulk of inference) |
+  | iPhone 15 Pro Max | A17 Pro | ~6GB | Secondary node (assists with sharding) |
+
+- Install Exo:
+  ```bash
+  pip install exo
+  ```
+
+- Start the cluster (both devices must be on the same WiFi):
+  ```bash
+  # On your MacBook (primary node)
+  exo run llama-3.1-70b --discovery wifi
+  ```
+  The iPhone joins automatically via Exo's peer-to-peer discovery.
+
+- **When this is useful**:
+  - Running 70B+ parameter models that exceed your MacBook's RAM alone
+  - Getting extra compute from your iPhone while it's sitting on your desk
+  - Experimenting with distributed inference without buying additional hardware
+
+- **Practical reality**: For most coding tasks, Ollama with qwen2.5-coder:14b on your MacBook alone is more than sufficient. Exo is for when you want to run frontier-class models (70B+) locally.
+
+---
+
+### 21. Validate the Complete Setup
 **Why**: Confirm every layer works together before using this for real work.
 
 Run these checks in order:
@@ -1024,7 +1153,7 @@ stdin (JSON) → Hook Script → stdout (JSON, optional) + exit code
 - **Claude Desktop vs Claude Code**: Claude Desktop (the macOS app you already have) is for chat conversations. Claude Code (the CLI, the `claude` command in Terminal) is for coding with hooks, sub-agents, and tool use. This entire spec is for the CLI. They coexist and use the same Anthropic account.
 - **Global vs. project paths**: Global hooks should use `Path.home() / '.claude' / 'logs'` for logging. Project hooks use `Path.cwd() / 'logs'`. Be consistent to avoid polluting project directories with global log data.
 - **Security first**: The PreToolUse security hook is the one hook that should ALWAYS be global. It protects every project from accidental destructive commands and `.env` leakage.
-- **Incremental setup**: You don't need to do everything at once. Steps 1-12 give you a fully functional setup with global hooks and Ollama. Steps 13-19 are enhancements (per-project patterns, MCP, observability, Docker) you can add as needed.
+- **Incremental setup**: You don't need to do everything at once. Steps 1-13 give you a fully functional setup with global hooks, Ollama, and developer tools. Steps 14-21 are enhancements (per-project patterns, MCP, observability, Docker, Exo) you can add as needed.
 - **Estimated disk usage**:
   | Component | Size |
   |-----------|------|
@@ -1037,6 +1166,9 @@ stdin (JSON) → Hook Script → stdout (JSON, optional) + exit code
   | Python packages (cached) | ~50MB |
   | Ollama + llama3.2:3b | ~2.5GB |
   | whisper.cpp + base model | ~200MB |
+  | VS Code + iTerm2 + Warp + Raycast | ~1GB |
+  | LM Studio (recommended) | ~500MB |
+  | qwen2.5-coder:3b (recommended) | ~2GB |
   | Docker Desktop (optional) | ~2GB |
-  | **Total (essential, with Ollama 3b + Whisper base)** | **~5.2GB** |
-  | **Total (with Docker + larger models)** | **~20GB** |
+  | **Total (essential + dev tools)** | **~8.7GB** |
+  | **Total (with Docker + larger models + Exo)** | **~25GB** |
