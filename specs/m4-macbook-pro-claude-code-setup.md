@@ -122,7 +122,8 @@ Before diving into steps, here is every dependency the hooks ecosystem requires,
 | `npm` | 10+ | **YES** | Comes with Node — installs Claude Code CLI globally |
 | `bun` | Latest | Recommended | TypeScript projects, task-manager demo app |
 | `just` | Latest | Optional | Command runner for install-and-maintain `justfile` |
-| `ollama` | Latest | Optional | Local LLM inference (M4 Neural Engine accelerated) |
+| `ollama` | Latest | **YES** | Local LLM inference — no API key, no cost. M4 Neural Engine accelerated |
+| `docker` | Latest | Optional | Containerized services (databases, CI testing). Not needed by hooks |
 
 ### Python Packages (auto-resolved by `uv` via PEP 723 headers)
 
@@ -155,6 +156,18 @@ Before diving into steps, here is every dependency the hooks ecosystem requires,
 | `ENGINEER_NAME` | Optional | Personalized status line and session greetings |
 | `OLLAMA_MODEL` | Optional | Override default Ollama model (default: `gpt-oss:20b`) |
 | `OLLAMA_HOST` | Optional | Override Ollama endpoint (default: `http://localhost:11434`) |
+
+### Accounts Required
+
+| Service | Sign Up | Free Tier? | What It's For | Required? |
+|---------|---------|------------|---------------|-----------|
+| **Anthropic** | [console.anthropic.com](https://console.anthropic.com) | Pay-per-use only | Claude Code itself + `anth.py` hook LLM calls | **YES** |
+| **GitHub** | [github.com](https://github.com) | Free | `gh auth login` — issue fetching, PR workflows | **YES** |
+| **Ollama** | [ollama.com](https://ollama.com) | **No account needed** | Fully local LLM — no signup, no API key, no cost | N/A |
+| **OpenAI** | [platform.openai.com](https://platform.openai.com) | $5 free credit (new accounts) | TTS voice, LLM completion messages in `stop.py` | Optional |
+| **ElevenLabs** | [elevenlabs.io](https://elevenlabs.io) | 10k chars/month free | Premium TTS voices | Optional |
+
+> **Minimum to function**: Anthropic account (for Claude Code) + GitHub account (free). With Ollama as a local fallback, you get agent naming and completion messages without any additional paid API keys.
 
 ### macOS-Specific Notes
 
@@ -218,7 +231,7 @@ IMPORTANT: Execute every step in order, top to bottom.
 
 - Install all tools in one batch:
   ```bash
-  brew install git gh uv python@3.13 node bun just
+  brew install git gh uv python@3.13 node bun just ollama
   ```
 - What each tool does:
   | Tool | Purpose | Used By |
@@ -230,6 +243,21 @@ IMPORTANT: Execute every step in order, top to bottom.
   | `node` | JavaScript runtime (includes npm) | Required to install Claude Code CLI |
   | `bun` | Fast JS/TS runtime with built-in SQLite | TypeScript projects, task-manager demo |
   | `just` | Command runner (like make, but simpler) | install-and-maintain `justfile` |
+  | `ollama` | Local LLM — runs on M4 Neural Engine, no API key | Agent naming, task summaries, completion messages |
+
+- Start Ollama as a background service (auto-starts on boot):
+  ```bash
+  brew services start ollama
+  ```
+
+- Pull a model for hook use (choose based on your RAM):
+  ```bash
+  # 16GB M4 — small & fast, good for agent naming
+  ollama pull llama3.2:3b
+
+  # 24GB+ M4 Pro/Max — richer responses
+  ollama pull llama3.2:8b
+  ```
 
 - Authenticate GitHub CLI:
   ```bash
@@ -248,6 +276,7 @@ IMPORTANT: Execute every step in order, top to bottom.
   npm --version
   bun --version
   just --version
+  ollama list             # Should show your pulled model
   ```
 
 ---
@@ -581,41 +610,12 @@ Copy and adapt these hooks from this repo to `~/.claude/hooks/`:
 
 ---
 
-### 15. (Optional) Install Ollama for Local LLM
-**Why**: Several hooks use an LLM fallback chain (OpenAI > Anthropic > Ollama). Ollama runs models locally on your M4 Pro/Max — no API key, no cost, fast inference. The M4's unified memory and Neural Engine make local models practical for agent naming, task summaries, and completion messages.
+### 15. Ollama Model Configuration Reference
+**Note**: Ollama was installed and started in Step 3. This section provides additional configuration details.
 
-- Install Ollama:
+- **How hooks use Ollama**: The LLM utility at `.claude/hooks/utils/llm/ollama.py` connects to `http://localhost:11434/v1` using the OpenAI-compatible API. It uses the `OLLAMA_MODEL` env var (default: `gpt-oss:20b`). Add to your `~/.env`:
   ```bash
-  brew install ollama
-  ```
-- Start the Ollama service (runs in background on port 11434):
-  ```bash
-  brew services start ollama
-  ```
-  - This registers Ollama as a macOS LaunchAgent — it starts automatically on boot
-  - Alternatively, for one-time use: `ollama serve &`
-
-- Pull models (choose based on your M4 variant's RAM):
-  ```bash
-  # Small & fast — works on any M4 (16GB+)
-  ollama pull llama3.2:3b          # ~2GB, good for agent naming
-
-  # Medium — recommended for M4 Pro (18GB+)
-  ollama pull llama3.2:8b          # ~4.7GB, better summaries
-
-  # The default model used by hooks in this repo:
-  ollama pull gpt-oss:20b          # ~12GB, needs 24GB+ RAM (M4 Pro/Max)
-  ```
-
-- Verify Ollama is running:
-  ```bash
-  ollama list                      # Shows downloaded models
-  curl http://localhost:11434/v1/models  # API responds
-  ```
-
-- **How hooks use Ollama**: The LLM utility at `.claude/hooks/utils/llm/ollama.py` connects to `http://localhost:11434/v1` using the OpenAI-compatible API. It uses the `OLLAMA_MODEL` env var (default: `gpt-oss:20b`). Override in your `~/.env`:
-  ```bash
-  OLLAMA_MODEL=llama3.2:3b    # Use the smaller model
+  OLLAMA_MODEL=llama3.2:3b    # Match the model you pulled in Step 3
   OLLAMA_HOST=http://localhost:11434  # Default, only change if custom port
   ```
 
@@ -624,7 +624,18 @@ Copy and adapt these hooks from this repo to `~/.claude/hooks/`:
   |-------|----------|-----------|----------|
   | llama3.2:3b | ~2GB | ~60 tok/s | Agent names, short completions |
   | llama3.2:8b | ~5GB | ~35 tok/s | Task summaries, completion messages |
-  | gpt-oss:20b | ~12GB | ~15 tok/s | Richer responses, deeper analysis |
+  | gpt-oss:20b | ~12GB | ~15 tok/s | Richer responses (needs 24GB+ RAM) |
+
+- **Pull additional models later** as needed:
+  ```bash
+  ollama pull gpt-oss:20b          # Larger model, M4 Pro/Max with 24GB+
+  ```
+
+- Verify Ollama is running:
+  ```bash
+  ollama list                      # Shows downloaded models
+  curl http://localhost:11434/v1/models  # API responds
+  ```
 
 ---
 
@@ -666,7 +677,40 @@ Copy and adapt these hooks from this repo to `~/.claude/hooks/`:
 
 ---
 
-### 18. Validate the Complete Setup
+### 18. (Optional) Install Docker
+**Why**: Docker is not needed by any hooks or Claude Code features, but many real-world projects use it for databases, microservices, CI pipeline testing, and devcontainers.
+
+- Install Docker Desktop for Mac:
+  ```bash
+  brew install --cask docker
+  ```
+- Launch Docker Desktop from Applications (first launch requires granting permissions)
+- Docker Desktop runs a background daemon (~1-2GB RAM when idle)
+- Verify:
+  ```bash
+  docker --version
+  docker compose version
+  ```
+
+- **When you need Docker**:
+  | Use Case | Example |
+  |----------|---------|
+  | Running databases | `docker run -d postgres:16`, `docker run -d redis:7` |
+  | Devcontainers | VS Code / Cursor remote container development |
+  | CI testing | Running GitHub Actions locally with `act` |
+  | MCP servers | Some MCP servers ship as Docker images |
+
+- **When you don't need Docker**:
+  - The hooks ecosystem is pure Python + uv — no containers
+  - Ollama runs natively on macOS (no Docker wrapper)
+  - SQLite is built into Bun and Python — no database container needed
+  - Simple projects with no external service dependencies
+
+> **Tip**: Docker Desktop uses ~2GB disk + ~1-2GB RAM as a background daemon. If disk/memory are a concern, install only when a project requires it. You can quit Docker Desktop when not in use.
+
+---
+
+### 19. Validate the Complete Setup
 **Why**: Confirm every layer works together before using this for real work.
 
 Run these checks in order:
@@ -740,9 +784,13 @@ python3 -c "import openai; print('openai OK')"
 uvx ruff --version               # Ruff linter
 uvx ty --version                 # Ty type checker
 
-# Optional: Ollama running
+# Ollama running (essential)
 ollama list                      # Shows downloaded models
 curl -s http://localhost:11434/v1/models | python3 -m json.tool  # API responds
+
+# Docker (optional)
+docker --version                 # Only if installed
+docker compose version           # Only if installed
 ```
 
 ### Validation Commands (Layer 2 — Global Hooks)
@@ -780,18 +828,19 @@ uv run python -m py_compile .claude/hooks/session_start.py
 ## Acceptance Criteria
 
 1. **Xcode CLI Tools installed**: `xcode-select -p` returns `/Library/Developer/CommandLineTools`
-2. **Foundation tools installed**: Homebrew, git, gh (authenticated), uv, python3 (3.11+), node, npm, bun, just, claude CLI all return valid version numbers
-3. **Python packages cached**: `python3 -c "import dotenv"` succeeds without error
-4. **Code quality tools cached**: `uvx ruff --version` and `uvx ty --version` both succeed
-5. **Global hooks directory exists**: `~/.claude/hooks/` contains pre_tool_use.py, permission_request.py, stop.py, post_tool_use_failure.py, and utils/ (with llm/ and tts/ subdirectories)
-6. **Global settings wired**: `~/.claude/settings.json` is valid JSON with PreToolUse, PermissionRequest, Stop, and PostToolUseFailure hooks configured
-7. **Status line works**: Running Claude Code shows a status line at the bottom of the terminal
-8. **Security hook blocks**: Attempting `rm -rf /` or `.env` file access is blocked with exit code 2
-9. **Logging works**: After a Claude Code session, `~/.claude/logs/` contains JSON log files
-10. **Transcript saved**: The Stop hook saves a readable `chat.json` transcript after each session
-11. **Per-project pattern available**: The install-and-maintain repo is cloned and `claude --init-only` succeeds
-12. **All hook scripts compile**: Every `.py` file in `~/.claude/hooks/` passes `py_compile`
-13. **Environment variables set**: `~/.env` exists with at least `ANTHROPIC_API_KEY`, permissions are `600`
+2. **Foundation tools installed**: Homebrew, git, gh (authenticated), uv, python3 (3.11+), node, npm, bun, just, ollama, claude CLI all return valid version numbers
+3. **Ollama running**: `ollama list` shows at least one downloaded model, `curl http://localhost:11434/v1/models` responds
+4. **Python packages cached**: `python3 -c "import dotenv"` succeeds without error
+5. **Code quality tools cached**: `uvx ruff --version` and `uvx ty --version` both succeed
+6. **Global hooks directory exists**: `~/.claude/hooks/` contains pre_tool_use.py, permission_request.py, stop.py, post_tool_use_failure.py, and utils/ (with llm/ and tts/ subdirectories)
+7. **Global settings wired**: `~/.claude/settings.json` is valid JSON with PreToolUse, PermissionRequest, Stop, and PostToolUseFailure hooks configured
+8. **Status line works**: Running Claude Code shows a status line at the bottom of the terminal
+9. **Security hook blocks**: Attempting `rm -rf /` or `.env` file access is blocked with exit code 2
+10. **Logging works**: After a Claude Code session, `~/.claude/logs/` contains JSON log files
+11. **Transcript saved**: The Stop hook saves a readable `chat.json` transcript after each session
+12. **Per-project pattern available**: The install-and-maintain repo is cloned and `claude --init-only` succeeds
+13. **All hook scripts compile**: Every `.py` file in `~/.claude/hooks/` passes `py_compile`
+14. **Environment variables set**: `~/.env` exists with at least `ANTHROPIC_API_KEY`, permissions are `600`
 
 ## Architecture Reference
 
@@ -834,7 +883,7 @@ stdin (JSON) → Hook Script → stdout (JSON, optional) + exit code
 - **Claude Desktop vs Claude Code**: Claude Desktop (the macOS app you already have) is for chat conversations. Claude Code (the CLI, the `claude` command in Terminal) is for coding with hooks, sub-agents, and tool use. This entire spec is for the CLI. They coexist and use the same Anthropic account.
 - **Global vs. project paths**: Global hooks should use `Path.home() / '.claude' / 'logs'` for logging. Project hooks use `Path.cwd() / 'logs'`. Be consistent to avoid polluting project directories with global log data.
 - **Security first**: The PreToolUse security hook is the one hook that should ALWAYS be global. It protects every project from accidental destructive commands and `.env` leakage.
-- **Incremental setup**: You don't need to do everything at once. Steps 1-12 give you a fully functional setup with global hooks. Steps 13-18 are enhancements (per-project patterns, Ollama, MCP, observability) you can add as needed.
+- **Incremental setup**: You don't need to do everything at once. Steps 1-12 give you a fully functional setup with global hooks and Ollama. Steps 13-19 are enhancements (per-project patterns, MCP, observability, Docker) you can add as needed.
 - **Estimated disk usage**:
   | Component | Size |
   |-----------|------|
@@ -845,7 +894,7 @@ stdin (JSON) → Hook Script → stdout (JSON, optional) + exit code
   | uv + Python 3.13 | ~150MB |
   | Claude Code CLI | ~50MB |
   | Python packages (cached) | ~50MB |
-  | Ollama + llama3.2:3b (optional) | ~2.5GB |
-  | Ollama + gpt-oss:20b (optional) | ~12GB |
-  | **Total (without Ollama)** | **~2.4GB** |
-  | **Total (with small Ollama model)** | **~5GB** |
+  | Ollama + llama3.2:3b | ~2.5GB |
+  | Docker Desktop (optional) | ~2GB |
+  | **Total (essential, with Ollama 3b)** | **~5GB** |
+  | **Total (with Docker + larger Ollama model)** | **~19GB** |
