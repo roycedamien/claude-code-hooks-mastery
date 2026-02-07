@@ -123,6 +123,7 @@ Before diving into steps, here is every dependency the hooks ecosystem requires,
 | `bun` | Latest | Recommended | TypeScript projects, task-manager demo app |
 | `just` | Latest | Optional | Command runner for install-and-maintain `justfile` |
 | `ollama` | Latest | **YES** | Local LLM inference — no API key, no cost. M4 Neural Engine accelerated |
+| `whisper-cpp` | Latest | **YES** | Local speech-to-text — no API key, Core ML accelerated on M4. ~27x real-time |
 | `docker` | Latest | Optional | Containerized services (databases, CI testing). Not needed by hooks |
 
 ### Python Packages (auto-resolved by `uv` via PEP 723 headers)
@@ -164,6 +165,7 @@ Before diving into steps, here is every dependency the hooks ecosystem requires,
 | **Anthropic** | [console.anthropic.com](https://console.anthropic.com) | Pay-per-use only | Claude Code itself + `anth.py` hook LLM calls | **YES** |
 | **GitHub** | [github.com](https://github.com) | Free | `gh auth login` — issue fetching, PR workflows | **YES** |
 | **Ollama** | [ollama.com](https://ollama.com) | **No account needed** | Fully local LLM — no signup, no API key, no cost | N/A |
+| **whisper.cpp** | [github.com/ggml-org/whisper.cpp](https://github.com/ggml-org/whisper.cpp) | **No account needed** | Fully local STT — no signup, no API key, no cost | N/A |
 | **OpenAI** | [platform.openai.com](https://platform.openai.com) | $5 free credit (new accounts) | TTS voice, LLM completion messages in `stop.py` | Optional |
 | **ElevenLabs** | [elevenlabs.io](https://elevenlabs.io) | 10k chars/month free | Premium TTS voices | Optional |
 
@@ -175,6 +177,8 @@ Before diving into steps, here is every dependency the hooks ecosystem requires,
 |---------|--------|
 | Apple Silicon (ARM64) | All tools have native ARM64 builds. No Rosetta 2 needed. |
 | Audio output for TTS | macOS AVFoundation is built-in. `pyttsx3` uses it automatically. |
+| Audio input for STT | Built-in microphone + Core Audio. whisper.cpp uses it natively. Install `sox` for real-time mic recording. |
+| Core ML (Neural Engine) | whisper.cpp and Ollama both leverage the M4 ANE for hardware acceleration. macOS Sonoma 14+ recommended. |
 | File locking (`fcntl`) | Built into Python on macOS/Unix. Used by `tts_queue.py`. |
 | SQLite | Built into `bun:sqlite` and Python stdlib. No install needed. |
 
@@ -231,7 +235,7 @@ IMPORTANT: Execute every step in order, top to bottom.
 
 - Install all tools in one batch:
   ```bash
-  brew install git gh uv python@3.13 node bun just ollama
+  brew install git gh uv python@3.13 node bun just ollama whisper-cpp
   ```
 - What each tool does:
   | Tool | Purpose | Used By |
@@ -244,6 +248,7 @@ IMPORTANT: Execute every step in order, top to bottom.
   | `bun` | Fast JS/TS runtime with built-in SQLite | TypeScript projects, task-manager demo |
   | `just` | Command runner (like make, but simpler) | install-and-maintain `justfile` |
   | `ollama` | Local LLM — runs on M4 Neural Engine, no API key | Agent naming, task summaries, completion messages |
+  | `whisper-cpp` | Local speech-to-text — Core ML accelerated, no API key | Voice input, audio transcription |
 
 - Start Ollama as a background service (auto-starts on boot):
   ```bash
@@ -257,6 +262,15 @@ IMPORTANT: Execute every step in order, top to bottom.
 
   # 24GB+ M4 Pro/Max — richer responses
   ollama pull llama3.2:8b
+  ```
+
+- Download a Whisper model for speech-to-text (choose based on accuracy needs):
+  ```bash
+  # Download the base model (~142MB) — good balance of speed and accuracy
+  whisper-cpp-download-ggml-model base
+
+  # Or the small model (~466MB) — better accuracy, still fast on M4
+  whisper-cpp-download-ggml-model small
   ```
 
 - Authenticate GitHub CLI:
@@ -277,6 +291,7 @@ IMPORTANT: Execute every step in order, top to bottom.
   bun --version
   just --version
   ollama list             # Should show your pulled model
+  whisper-cpp --help       # Should show whisper.cpp usage
   ```
 
 ---
@@ -610,8 +625,10 @@ Copy and adapt these hooks from this repo to `~/.claude/hooks/`:
 
 ---
 
-### 15. Ollama Model Configuration Reference
-**Note**: Ollama was installed and started in Step 3. This section provides additional configuration details.
+### 15. Local AI Configuration Reference (Ollama + Whisper)
+**Note**: Both tools were installed in Step 3. This section provides detailed configuration and model management.
+
+#### Ollama (Local LLM — Text Generation)
 
 - **How hooks use Ollama**: The LLM utility at `.claude/hooks/utils/llm/ollama.py` connects to `http://localhost:11434/v1` using the OpenAI-compatible API. It uses the `OLLAMA_MODEL` env var (default: `gpt-oss:20b`). Add to your `~/.env`:
   ```bash
@@ -619,14 +636,14 @@ Copy and adapt these hooks from this repo to `~/.claude/hooks/`:
   OLLAMA_HOST=http://localhost:11434  # Default, only change if custom port
   ```
 
-- **M4 performance expectations**:
+- **M4 performance expectations (LLM)**:
   | Model | RAM Used | Tokens/sec | Good For |
   |-------|----------|-----------|----------|
   | llama3.2:3b | ~2GB | ~60 tok/s | Agent names, short completions |
   | llama3.2:8b | ~5GB | ~35 tok/s | Task summaries, completion messages |
   | gpt-oss:20b | ~12GB | ~15 tok/s | Richer responses (needs 24GB+ RAM) |
 
-- **Pull additional models later** as needed:
+- Pull additional models later as needed:
   ```bash
   ollama pull gpt-oss:20b          # Larger model, M4 Pro/Max with 24GB+
   ```
@@ -636,6 +653,64 @@ Copy and adapt these hooks from this repo to `~/.claude/hooks/`:
   ollama list                      # Shows downloaded models
   curl http://localhost:11434/v1/models  # API responds
   ```
+
+#### whisper.cpp (Local STT — Speech-to-Text)
+
+- **What it is**: A C/C++ port of OpenAI's Whisper model, optimized for Apple Silicon. Uses Core ML and the M4 Neural Engine for hardware-accelerated inference. 100% local — audio never leaves your machine. MIT license, no account, no API key.
+
+- **Why not the OpenAI Whisper API?**: The cloud API costs $0.006/min and sends your audio to OpenAI's servers. whisper.cpp is free, private, and on M4 hardware it's **faster than real-time**.
+
+- **Available models** (downloaded in Step 3):
+  | Model | Size | Speed on M4 | Accuracy | Best For |
+  |-------|------|-------------|----------|----------|
+  | tiny | ~75MB | ~27x real-time | Good | Quick commands, short phrases |
+  | base | ~142MB | ~16x real-time | Better | General transcription (recommended start) |
+  | small | ~466MB | ~8x real-time | Great | Meetings, detailed transcription |
+  | medium | ~1.5GB | ~4x real-time | Excellent | High-accuracy professional use |
+  | large-v3 | ~3GB | ~2x real-time | Best | Maximum accuracy, multi-language |
+
+- Download additional models:
+  ```bash
+  whisper-cpp-download-ggml-model medium    # Higher accuracy
+  whisper-cpp-download-ggml-model large-v3  # Maximum accuracy
+  ```
+
+- **Basic usage** — transcribe an audio file:
+  ```bash
+  # Transcribe a WAV file
+  whisper-cpp -m /opt/homebrew/share/whisper-cpp/models/ggml-base.bin -f audio.wav
+
+  # Transcribe with timestamps
+  whisper-cpp -m /opt/homebrew/share/whisper-cpp/models/ggml-base.bin -f audio.wav -otxt
+
+  # Real-time microphone input (requires sox for recording)
+  brew install sox
+  rec -c 1 -r 16000 -t wav - | whisper-cpp -m /opt/homebrew/share/whisper-cpp/models/ggml-base.bin -f -
+  ```
+
+- **Core ML acceleration** (optional, for maximum M4 performance):
+  ```bash
+  # Generate Core ML model for Neural Engine acceleration
+  whisper-cpp-generate-coreml-model base
+  ```
+  This creates an ANE-optimized model that runs ~3x faster than the standard model on Apple Silicon.
+
+- **Alternatives to consider later**:
+  | Tool | Language | Notes |
+  |------|----------|-------|
+  | [WhisperKit](https://github.com/argmaxinc/WhisperKit) | Swift | Native Apple framework, real-time streaming |
+  | [mlx-whisper](https://github.com/ml-explore/mlx-examples) | Python | Apple MLX framework, optimized for Apple Silicon |
+  | `openai-whisper` | Python | Original open-source model, heavier deps |
+
+#### The Local AI Stack Summary
+
+With Ollama + whisper.cpp + pyttsx3, you have a complete **voice I/O pipeline** running entirely on your M4 with zero cloud dependencies:
+
+```
+Voice Input → [whisper.cpp: STT] → Text → [Ollama: LLM] → Response → [pyttsx3: TTS] → Audio Output
+```
+
+All three run locally, require no API keys, and leverage the M4's Neural Engine.
 
 ---
 
@@ -788,6 +863,10 @@ uvx ty --version                 # Ty type checker
 ollama list                      # Shows downloaded models
 curl -s http://localhost:11434/v1/models | python3 -m json.tool  # API responds
 
+# whisper.cpp installed (essential)
+whisper-cpp --help               # Shows usage info
+ls /opt/homebrew/share/whisper-cpp/models/  # Should show downloaded model(s)
+
 # Docker (optional)
 docker --version                 # Only if installed
 docker compose version           # Only if installed
@@ -828,19 +907,20 @@ uv run python -m py_compile .claude/hooks/session_start.py
 ## Acceptance Criteria
 
 1. **Xcode CLI Tools installed**: `xcode-select -p` returns `/Library/Developer/CommandLineTools`
-2. **Foundation tools installed**: Homebrew, git, gh (authenticated), uv, python3 (3.11+), node, npm, bun, just, ollama, claude CLI all return valid version numbers
+2. **Foundation tools installed**: Homebrew, git, gh (authenticated), uv, python3 (3.11+), node, npm, bun, just, ollama, whisper-cpp, claude CLI all return valid version numbers
 3. **Ollama running**: `ollama list` shows at least one downloaded model, `curl http://localhost:11434/v1/models` responds
-4. **Python packages cached**: `python3 -c "import dotenv"` succeeds without error
-5. **Code quality tools cached**: `uvx ruff --version` and `uvx ty --version` both succeed
-6. **Global hooks directory exists**: `~/.claude/hooks/` contains pre_tool_use.py, permission_request.py, stop.py, post_tool_use_failure.py, and utils/ (with llm/ and tts/ subdirectories)
-7. **Global settings wired**: `~/.claude/settings.json` is valid JSON with PreToolUse, PermissionRequest, Stop, and PostToolUseFailure hooks configured
-8. **Status line works**: Running Claude Code shows a status line at the bottom of the terminal
-9. **Security hook blocks**: Attempting `rm -rf /` or `.env` file access is blocked with exit code 2
-10. **Logging works**: After a Claude Code session, `~/.claude/logs/` contains JSON log files
-11. **Transcript saved**: The Stop hook saves a readable `chat.json` transcript after each session
-12. **Per-project pattern available**: The install-and-maintain repo is cloned and `claude --init-only` succeeds
-13. **All hook scripts compile**: Every `.py` file in `~/.claude/hooks/` passes `py_compile`
-14. **Environment variables set**: `~/.env` exists with at least `ANTHROPIC_API_KEY`, permissions are `600`
+4. **whisper.cpp working**: `whisper-cpp --help` succeeds and at least one model exists in `/opt/homebrew/share/whisper-cpp/models/`
+5. **Python packages cached**: `python3 -c "import dotenv"` succeeds without error
+6. **Code quality tools cached**: `uvx ruff --version` and `uvx ty --version` both succeed
+7. **Global hooks directory exists**: `~/.claude/hooks/` contains pre_tool_use.py, permission_request.py, stop.py, post_tool_use_failure.py, and utils/ (with llm/ and tts/ subdirectories)
+8. **Global settings wired**: `~/.claude/settings.json` is valid JSON with PreToolUse, PermissionRequest, Stop, and PostToolUseFailure hooks configured
+9. **Status line works**: Running Claude Code shows a status line at the bottom of the terminal
+10. **Security hook blocks**: Attempting `rm -rf /` or `.env` file access is blocked with exit code 2
+11. **Logging works**: After a Claude Code session, `~/.claude/logs/` contains JSON log files
+12. **Transcript saved**: The Stop hook saves a readable `chat.json` transcript after each session
+13. **Per-project pattern available**: The install-and-maintain repo is cloned and `claude --init-only` succeeds
+14. **All hook scripts compile**: Every `.py` file in `~/.claude/hooks/` passes `py_compile`
+15. **Environment variables set**: `~/.env` exists with at least `ANTHROPIC_API_KEY`, permissions are `600`
 
 ## Architecture Reference
 
@@ -895,6 +975,7 @@ stdin (JSON) → Hook Script → stdout (JSON, optional) + exit code
   | Claude Code CLI | ~50MB |
   | Python packages (cached) | ~50MB |
   | Ollama + llama3.2:3b | ~2.5GB |
+  | whisper.cpp + base model | ~200MB |
   | Docker Desktop (optional) | ~2GB |
-  | **Total (essential, with Ollama 3b)** | **~5GB** |
-  | **Total (with Docker + larger Ollama model)** | **~19GB** |
+  | **Total (essential, with Ollama 3b + Whisper base)** | **~5.2GB** |
+  | **Total (with Docker + larger models)** | **~20GB** |
