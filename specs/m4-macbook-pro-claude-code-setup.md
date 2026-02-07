@@ -104,58 +104,155 @@ Set up the install-and-maintain bootstrapping pattern so any new project gets a 
 ### Phase 4: Optional Enhancements
 TTS feedback, MCP servers, Ollama for local LLM, observability layer.
 
+## Complete Dependency Manifest
+
+Before diving into steps, here is every dependency the hooks ecosystem requires, so you can see the full picture:
+
+### System-Level Tools (installed via Homebrew)
+
+| Tool | Version | Required? | What Needs It |
+|------|---------|-----------|---------------|
+| Xcode CLI Tools | Latest | **YES** | Homebrew, git, compilers — prerequisite for everything |
+| Homebrew | Latest | **YES** | Package manager — installs all other tools |
+| `git` | 2.x+ | **YES** | Every hook that checks repo state, all version control |
+| `gh` | Latest | Recommended | `session_start.py` (fetches GitHub issues), PR workflows |
+| `uv` | Latest | **YES** | **Critical** — runs every hook via PEP 723 `uv run --script` |
+| `python3` | 3.11+ | **YES** | Installed by `uv` automatically, or via Homebrew as fallback |
+| `node` | 20+ LTS | **YES** | Required to install Claude Code CLI via npm |
+| `npm` | 10+ | **YES** | Comes with Node — installs Claude Code CLI globally |
+| `bun` | Latest | Recommended | TypeScript projects, task-manager demo app |
+| `just` | Latest | Optional | Command runner for install-and-maintain `justfile` |
+| `ollama` | Latest | Optional | Local LLM inference (M4 Neural Engine accelerated) |
+
+### Python Packages (auto-resolved by `uv` via PEP 723 headers)
+
+> **How this works**: Every hook script has a `# dependencies = [...]` block in its header. When `uv run --script` executes the hook, `uv` automatically downloads, caches, and resolves these packages. You do NOT need to `pip install` them manually. First run of each hook is slightly slower (~2-5s) while uv caches; subsequent runs are instant.
+
+| Package | Used By | Purpose |
+|---------|---------|---------|
+| `python-dotenv` | 16+ hooks, all status lines | Loads `.env` files into environment |
+| `anthropic` | `utils/llm/anth.py`, `user_prompt_submit.py`, `subagent_stop.py` | Claude API calls (agent naming, task summaries) |
+| `openai` | `utils/llm/oai.py`, `utils/tts/openai_tts.py` | OpenAI API calls, TTS voice generation |
+| `elevenlabs` | `utils/tts/elevenlabs_tts.py` | High-quality text-to-speech |
+| `pyttsx3` | `utils/tts/pyttsx3_tts.py` | Offline TTS (uses macOS AVFoundation — no API key needed) |
+
+### Code Quality Tools (invoked via `uvx` — no install needed)
+
+| Tool | Used By | Purpose |
+|------|---------|---------|
+| `ruff` | `validators/ruff_validator.py` | Python linting (invoked as `uvx ruff check`) |
+| `ty` | `validators/ty_validator.py` | Python type checking (invoked as `uvx ty check`) |
+
+> **`uvx` explained**: Like `npx` for Python. It downloads a tool into an isolated environment and runs it — no global install pollution. The validators call `uvx ruff` and `uvx ty`, so these tools are fetched on demand.
+
+### API Keys (Environment Variables)
+
+| Key | Required? | What It Enables |
+|-----|-----------|-----------------|
+| `ANTHROPIC_API_KEY` | **YES** (for Claude Code itself) | Claude Code authentication, hook LLM calls |
+| `OPENAI_API_KEY` | Optional | OpenAI TTS, LLM-generated completion messages in `stop.py` |
+| `ELEVENLABS_API_KEY` | Optional | Premium TTS voice feedback |
+| `ENGINEER_NAME` | Optional | Personalized status line and session greetings |
+| `OLLAMA_MODEL` | Optional | Override default Ollama model (default: `gpt-oss:20b`) |
+| `OLLAMA_HOST` | Optional | Override Ollama endpoint (default: `http://localhost:11434`) |
+
+### macOS-Specific Notes
+
+| Concern | Status |
+|---------|--------|
+| Apple Silicon (ARM64) | All tools have native ARM64 builds. No Rosetta 2 needed. |
+| Audio output for TTS | macOS AVFoundation is built-in. `pyttsx3` uses it automatically. |
+| File locking (`fcntl`) | Built into Python on macOS/Unix. Used by `tts_queue.py`. |
+| SQLite | Built into `bun:sqlite` and Python stdlib. No install needed. |
+
 ## Step by Step Tasks
 
 IMPORTANT: Execute every step in order, top to bottom.
 
 ---
 
-### 1. Install Homebrew
+### 1. Install Xcode Command Line Tools
+**Why**: This is the true starting point on a fresh Mac. Xcode CLI Tools provide `git`, C/C++ compilers, and headers that Homebrew and many packages need to build. Without this, `brew install` will fail.
+
+- Open Terminal.app (Cmd+Space, type "Terminal")
+- Run:
+  ```bash
+  xcode-select --install
+  ```
+- A dialog will pop up — click **Install** and wait (~5-10 minutes, ~1.5GB download)
+- Verify:
+  ```bash
+  xcode-select -p
+  # Should output: /Library/Developer/CommandLineTools
+  git --version
+  # Should output: git version 2.x.x (Apple Git-xxx)
+  ```
+
+> **Note**: This gives you Apple's bundled `git`. We'll install a newer version via Homebrew next, but the bundled one is needed for Homebrew's own installation.
+
+---
+
+### 2. Install Homebrew
 **Why**: Homebrew is the macOS package manager. Everything else installs through it.
 
-- Open Terminal.app
 - Run the Homebrew installer:
   ```bash
   /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
   ```
-- Follow the post-install instructions to add Homebrew to your PATH (the installer prints these):
+- **Important** — the installer prints two commands at the end. Run them:
   ```bash
   echo 'eval "$(/opt/homebrew/bin/brew shellenv)"' >> ~/.zprofile
   eval "$(/opt/homebrew/bin/brew shellenv)"
   ```
-- Verify: `brew --version`
+  - The first line makes Homebrew available in future terminal sessions
+  - The second line makes it available right now
+- Verify:
+  ```bash
+  brew --version
+  ```
 
 ---
 
-### 2. Install Foundation Tools
+### 3. Install Foundation Tools
 **Why**: These are the runtime dependencies that hooks and projects need.
 
 - Install all tools in one batch:
   ```bash
-  brew install git gh uv node bun just
+  brew install git gh uv python@3.13 node bun just
   ```
 - What each tool does:
   | Tool | Purpose | Used By |
   |------|---------|---------|
-  | `git` | Version control | Everything |
-  | `gh` | GitHub CLI (PRs, issues, API) | session_start.py (fetches recent issues) |
-  | `uv` | Fast Python package manager | Every hook (PEP 723 single-file scripts) |
-  | `node` | JavaScript runtime | npm-based projects |
-  | `bun` | Fast JS/TS runtime | TypeScript projects, task-manager app |
-  | `just` | Command runner | install-and-maintain justfile |
+  | `git` | Version control (newer than Apple's bundled version) | Every hook that checks repo state |
+  | `gh` | GitHub CLI — PRs, issues, API access | `session_start.py` (fetches recent issues) |
+  | `uv` | **Critical** — fast Python package manager + script runner | Every hook via `uv run --script` |
+  | `python@3.13` | Python runtime (hooks require 3.11+) | All hook scripts |
+  | `node` | JavaScript runtime (includes npm) | Required to install Claude Code CLI |
+  | `bun` | Fast JS/TS runtime with built-in SQLite | TypeScript projects, task-manager demo |
+  | `just` | Command runner (like make, but simpler) | install-and-maintain `justfile` |
 
 - Authenticate GitHub CLI:
   ```bash
   gh auth login
   ```
+  - Select: **GitHub.com** > **HTTPS** > **Login with a web browser**
+  - Follow the browser flow to authenticate
+
 - Verify all tools:
   ```bash
-  git --version && gh --version && uv --version && node --version && bun --version && just --version
+  git --version
+  gh --version
+  uv --version
+  python3 --version    # Should show 3.13.x
+  node --version       # Should show v20+ or v22+
+  npm --version
+  bun --version
+  just --version
   ```
 
 ---
 
-### 3. Install Claude Code CLI
+### 4. Install Claude Code CLI
 **Why**: The CLI is what actually runs hooks. Claude Desktop does NOT support hooks — only the CLI does.
 
 - Install via npm (globally):
@@ -170,15 +267,15 @@ IMPORTANT: Execute every step in order, top to bottom.
   ```bash
   claude
   ```
-  - This creates `~/.claude/` directory structure
+  - This creates the `~/.claude/` directory structure automatically
   - Follow the authentication prompts to link your Anthropic account
-  - Exit with `/exit` after setup
+  - Exit with `/exit` after setup completes
 
-> **Important distinction**: Claude Desktop (the app you already have) is for chat. Claude Code (the CLI) is for coding with hooks, sub-agents, and tool use. They are separate products. Hooks only work in the CLI.
+> **Important distinction**: Claude Desktop (the app you already have) is for chat conversations. Claude Code (the CLI, the `claude` command in Terminal) is for coding with hooks, sub-agents, status lines, and tool use. They are separate products that coexist. Hooks, sub-agents, and everything in this spec are CLI-only features.
 
 ---
 
-### 4. Create Global Directory Structure
+### 5. Create Global Directory Structure
 **Why**: Global hooks live in `~/.claude/` and apply to every project you open with Claude Code.
 
 - Create the directory tree:
@@ -192,7 +289,7 @@ IMPORTANT: Execute every step in order, top to bottom.
 
 ---
 
-### 5. Set Up Global Environment Variables
+### 6. Set Up Global Environment Variables
 **Why**: Hooks that call LLM APIs or TTS services need API keys. These go in a dotfile, never in a repo.
 
 - Create `~/.env` with your API keys:
@@ -219,7 +316,34 @@ IMPORTANT: Execute every step in order, top to bottom.
 
 ---
 
-### 6. Install Global Security Hook (PreToolUse)
+### 7. Pre-Warm Python Dependency Cache
+**Why**: Every hook declares its Python dependencies inline (PEP 723). The first time `uv run` executes a hook, it downloads and caches those packages — adding 2-5 seconds. Pre-warming ensures all hooks run instantly from the start.
+
+- Pre-warm all packages the hooks will need:
+  ```bash
+  uv pip install --system python-dotenv anthropic openai elevenlabs pyttsx3
+  ```
+- **What each package does**:
+  | Package | Size | What Uses It |
+  |---------|------|-------------|
+  | `python-dotenv` | ~30KB | Every hook and status line — loads `.env` files |
+  | `anthropic` | ~2MB | Claude API calls in agent naming, task summaries |
+  | `openai` | ~2MB | OpenAI API calls, TTS voice generation |
+  | `elevenlabs` | ~1MB | Premium TTS (only if you have the API key) |
+  | `pyttsx3` | ~100KB | Offline TTS using macOS AVFoundation (no API key) |
+
+- **If you don't want to install globally**, you can skip this step. `uv run --script` will auto-resolve packages on first invocation per-hook. The tradeoff is a one-time ~3s delay per hook on first run.
+
+- Verify ruff and ty are fetchable (used by per-project validators):
+  ```bash
+  uvx ruff --version
+  uvx ty --version
+  ```
+  These download on first use and cache automatically. Running them once here pre-warms the cache.
+
+---
+
+### 8. Install Global Security Hook (PreToolUse)
 **Why**: This is the most important global hook. It blocks dangerous `rm -rf` commands and prevents `.env` file access across ALL projects. Adapted from `claude-code-hooks-mastery/.claude/hooks/pre_tool_use.py`.
 
 - Copy the security hook to global location:
@@ -236,7 +360,7 @@ IMPORTANT: Execute every step in order, top to bottom.
 
 ---
 
-### 7. Install Global Session & Lifecycle Hooks
+### 9. Install Global Session & Lifecycle Hooks
 **Why**: These provide awareness of what's happening across all Claude Code sessions.
 
 Copy and adapt these hooks from this repo to `~/.claude/hooks/`:
@@ -263,7 +387,7 @@ Copy and adapt these hooks from this repo to `~/.claude/hooks/`:
 
 ---
 
-### 8. Install Global Status Line
+### 10. Install Global Status Line
 **Why**: The status line shows real-time info at the bottom of your terminal while Claude Code runs — git branch, context window usage, cost tracking, etc.
 
 - Copy the recommended status line (v6 — context window usage bar):
@@ -285,7 +409,7 @@ Copy and adapt these hooks from this repo to `~/.claude/hooks/`:
 
 ---
 
-### 9. Wire Global Settings
+### 11. Wire Global Settings
 **Why**: `~/.claude/settings.json` tells Claude Code which hooks to run and when. Without this file, the hook scripts are just idle Python files.
 
 - Create `~/.claude/settings.json`:
@@ -385,7 +509,7 @@ Copy and adapt these hooks from this repo to `~/.claude/hooks/`:
 
 ---
 
-### 10. Test the Global Setup
+### 12. Test the Global Setup
 **Why**: Verify all hooks fire correctly before building the per-project layer.
 
 - Navigate to any directory and launch Claude Code:
@@ -409,7 +533,7 @@ Copy and adapt these hooks from this repo to `~/.claude/hooks/`:
 
 ---
 
-### 11. Clone the IndyDevDan Repos
+### 13. Clone the IndyDevDan Repos
 **Why**: These are your reference implementations and source material for per-project hooks.
 
 - Create a workspace directory:
@@ -427,7 +551,7 @@ Copy and adapt these hooks from this repo to `~/.claude/hooks/`:
 
 ---
 
-### 12. Set Up the Install-and-Maintain Pattern
+### 14. Set Up the Install-and-Maintain Pattern
 **Why**: This is the per-project bootstrapping system. When you start a new project, you copy this `.claude/` skeleton and run `claude --init` to set everything up automatically.
 
 - The pattern from `disler/install-and-maintain` uses three hooks:
@@ -457,26 +581,54 @@ Copy and adapt these hooks from this repo to `~/.claude/hooks/`:
 
 ---
 
-### 13. (Optional) Install Ollama for Local LLM
-**Why**: Several hooks use an LLM fallback chain (OpenAI > Anthropic > Ollama). Ollama runs models locally on your M4 — no API key, no cost, no latency.
+### 15. (Optional) Install Ollama for Local LLM
+**Why**: Several hooks use an LLM fallback chain (OpenAI > Anthropic > Ollama). Ollama runs models locally on your M4 Pro/Max — no API key, no cost, fast inference. The M4's unified memory and Neural Engine make local models practical for agent naming, task summaries, and completion messages.
 
 - Install Ollama:
   ```bash
   brew install ollama
   ```
-- Start the service:
+- Start the Ollama service (runs in background on port 11434):
   ```bash
-  ollama serve &
+  brew services start ollama
   ```
-- Pull a small, fast model:
+  - This registers Ollama as a macOS LaunchAgent — it starts automatically on boot
+  - Alternatively, for one-time use: `ollama serve &`
+
+- Pull models (choose based on your M4 variant's RAM):
   ```bash
-  ollama pull llama3.2:3b
+  # Small & fast — works on any M4 (16GB+)
+  ollama pull llama3.2:3b          # ~2GB, good for agent naming
+
+  # Medium — recommended for M4 Pro (18GB+)
+  ollama pull llama3.2:8b          # ~4.7GB, better summaries
+
+  # The default model used by hooks in this repo:
+  ollama pull gpt-oss:20b          # ~12GB, needs 24GB+ RAM (M4 Pro/Max)
   ```
-- The hooks in this repo already have Ollama support built in (see `.claude/hooks/utils/llm/ollama.py`). The M4's Neural Engine makes local inference fast.
+
+- Verify Ollama is running:
+  ```bash
+  ollama list                      # Shows downloaded models
+  curl http://localhost:11434/v1/models  # API responds
+  ```
+
+- **How hooks use Ollama**: The LLM utility at `.claude/hooks/utils/llm/ollama.py` connects to `http://localhost:11434/v1` using the OpenAI-compatible API. It uses the `OLLAMA_MODEL` env var (default: `gpt-oss:20b`). Override in your `~/.env`:
+  ```bash
+  OLLAMA_MODEL=llama3.2:3b    # Use the smaller model
+  OLLAMA_HOST=http://localhost:11434  # Default, only change if custom port
+  ```
+
+- **M4 performance expectations**:
+  | Model | RAM Used | Tokens/sec | Good For |
+  |-------|----------|-----------|----------|
+  | llama3.2:3b | ~2GB | ~60 tok/s | Agent names, short completions |
+  | llama3.2:8b | ~5GB | ~35 tok/s | Task summaries, completion messages |
+  | gpt-oss:20b | ~12GB | ~15 tok/s | Richer responses, deeper analysis |
 
 ---
 
-### 14. (Optional) Configure MCP Servers
+### 16. (Optional) Configure MCP Servers
 **Why**: MCP (Model Context Protocol) servers extend Claude Code with external tool access — web scraping, TTS, database queries, etc.
 
 - Create `~/.claude/.mcp.json` for global MCP servers:
@@ -502,7 +654,7 @@ Copy and adapt these hooks from this repo to `~/.claude/hooks/`:
 
 ---
 
-### 15. (Optional) Set Up Observability
+### 17. (Optional) Set Up Observability
 **Why**: `disler/claude-code-hooks-multi-agent-observability` adds a real-time monitoring dashboard for agent activity. Useful when running complex multi-agent workflows.
 
 - Clone and review:
@@ -514,7 +666,7 @@ Copy and adapt these hooks from this repo to `~/.claude/hooks/`:
 
 ---
 
-### 16. Validate the Complete Setup
+### 18. Validate the Complete Setup
 **Why**: Confirm every layer works together before using this for real work.
 
 Run these checks in order:
@@ -560,25 +712,54 @@ claude --init-only
 2. Run `claude --init` in the install-and-maintain repo — setup hook should execute
 3. Check `~/.claude/logs/` for structured JSON after a session
 
-### Validation Commands (Layer 1)
+### Validation Commands (Layer 1 — Foundation)
 ```bash
-brew --version          # Homebrew installed
-git --version           # Git available
-gh auth status          # GitHub CLI authenticated
-uv --version            # UV package manager
-node --version          # Node.js runtime
-bun --version           # Bun runtime
-just --version          # Just command runner
-claude --version        # Claude Code CLI
+# System prerequisite
+xcode-select -p                  # Xcode CLI Tools installed
+
+# Package manager
+brew --version                   # Homebrew installed
+
+# Core tools
+git --version                    # Git (Homebrew version)
+gh auth status                   # GitHub CLI authenticated
+uv --version                     # UV package manager
+python3 --version                # Python 3.11+ available
+node --version                   # Node.js runtime
+npm --version                    # npm (comes with Node)
+bun --version                    # Bun runtime
+just --version                   # Just command runner
+claude --version                 # Claude Code CLI
+
+# Python packages pre-warmed
+python3 -c "import dotenv; print('python-dotenv OK')"
+python3 -c "import anthropic; print('anthropic OK')"
+python3 -c "import openai; print('openai OK')"
+
+# Code quality tools reachable
+uvx ruff --version               # Ruff linter
+uvx ty --version                 # Ty type checker
+
+# Optional: Ollama running
+ollama list                      # Shows downloaded models
+curl -s http://localhost:11434/v1/models | python3 -m json.tool  # API responds
 ```
 
-### Validation Commands (Layer 2)
+### Validation Commands (Layer 2 — Global Hooks)
 ```bash
 # All global hook scripts compile
 uv run python -m py_compile ~/.claude/hooks/pre_tool_use.py
 uv run python -m py_compile ~/.claude/hooks/permission_request.py
 uv run python -m py_compile ~/.claude/hooks/stop.py
 uv run python -m py_compile ~/.claude/hooks/post_tool_use_failure.py
+
+# Utils compile
+uv run python -m py_compile ~/.claude/hooks/utils/llm/oai.py
+uv run python -m py_compile ~/.claude/hooks/utils/llm/anth.py
+uv run python -m py_compile ~/.claude/hooks/utils/llm/ollama.py
+uv run python -m py_compile ~/.claude/hooks/utils/tts/openai_tts.py
+uv run python -m py_compile ~/.claude/hooks/utils/tts/elevenlabs_tts.py
+uv run python -m py_compile ~/.claude/hooks/utils/tts/pyttsx3_tts.py
 
 # Settings is valid JSON
 python3 -m json.tool ~/.claude/settings.json > /dev/null && echo "Valid JSON"
@@ -598,16 +779,19 @@ uv run python -m py_compile .claude/hooks/session_start.py
 
 ## Acceptance Criteria
 
-1. **Foundation tools installed**: Homebrew, git, gh (authenticated), uv, node, bun, just, claude CLI all return valid version numbers
-2. **Global hooks directory exists**: `~/.claude/hooks/` contains pre_tool_use.py, permission_request.py, stop.py, post_tool_use_failure.py, and utils/
-3. **Global settings wired**: `~/.claude/settings.json` is valid JSON with PreToolUse, PermissionRequest, Stop, and PostToolUseFailure hooks configured
-4. **Status line works**: Running Claude Code shows a status line at the bottom of the terminal
-5. **Security hook blocks**: Attempting `rm -rf /` or `.env` file access is blocked with exit code 2
-6. **Logging works**: After a Claude Code session, `~/.claude/logs/` contains JSON log files
-7. **Transcript saved**: The Stop hook saves a readable `chat.json` transcript after each session
-8. **Per-project pattern available**: The install-and-maintain repo is cloned and `claude --init-only` succeeds
-9. **All hook scripts compile**: Every `.py` file in `~/.claude/hooks/` passes `py_compile`
-10. **Environment variables set**: `~/.env` exists with at least `ANTHROPIC_API_KEY`
+1. **Xcode CLI Tools installed**: `xcode-select -p` returns `/Library/Developer/CommandLineTools`
+2. **Foundation tools installed**: Homebrew, git, gh (authenticated), uv, python3 (3.11+), node, npm, bun, just, claude CLI all return valid version numbers
+3. **Python packages cached**: `python3 -c "import dotenv"` succeeds without error
+4. **Code quality tools cached**: `uvx ruff --version` and `uvx ty --version` both succeed
+5. **Global hooks directory exists**: `~/.claude/hooks/` contains pre_tool_use.py, permission_request.py, stop.py, post_tool_use_failure.py, and utils/ (with llm/ and tts/ subdirectories)
+6. **Global settings wired**: `~/.claude/settings.json` is valid JSON with PreToolUse, PermissionRequest, Stop, and PostToolUseFailure hooks configured
+7. **Status line works**: Running Claude Code shows a status line at the bottom of the terminal
+8. **Security hook blocks**: Attempting `rm -rf /` or `.env` file access is blocked with exit code 2
+9. **Logging works**: After a Claude Code session, `~/.claude/logs/` contains JSON log files
+10. **Transcript saved**: The Stop hook saves a readable `chat.json` transcript after each session
+11. **Per-project pattern available**: The install-and-maintain repo is cloned and `claude --init-only` succeeds
+12. **All hook scripts compile**: Every `.py` file in `~/.claude/hooks/` passes `py_compile`
+13. **Environment variables set**: `~/.env` exists with at least `ANTHROPIC_API_KEY`, permissions are `600`
 
 ## Architecture Reference
 
@@ -643,10 +827,25 @@ stdin (JSON) → Hook Script → stdout (JSON, optional) + exit code
 
 ## Notes
 
-- **macOS Arm64**: All tools listed support Apple Silicon natively. No Rosetta needed.
-- **uv is critical**: Every hook uses `#!/usr/bin/env -S uv run --script` — this is the PEP 723 pattern that lets each script declare its own dependencies inline. Without `uv`, no hooks run.
-- **Claude Desktop vs Claude Code**: Claude Desktop (the app) is for chat. Claude Code (the CLI, `claude` command) is for coding with hooks. This entire spec is for the CLI. They can coexist.
-- **Global vs. project paths**: Global hooks should use `Path.home() / '.claude' / 'logs'` for logging. Project hooks use `Path.cwd() / 'logs'`. Be consistent.
-- **Security first**: The PreToolUse security hook is the one hook that should ALWAYS be global. It protects every project from accidental destructive commands.
-- **Incremental setup**: You don't need to do everything at once. Phase 1 + Phase 2 (steps 1-10) give you a fully functional setup. Phase 3 and 4 (steps 11-15) are enhancements you can add later.
-- **Estimated disk usage**: ~500MB total (Homebrew, Node, Bun, uv, Ollama model). The hooks themselves are negligible.
+- **macOS Arm64 (Apple Silicon)**: All tools listed have native ARM64 builds. No Rosetta 2 translation needed. The M4 chip runs everything natively.
+- **Xcode CLI Tools are the real starting point**: On a fresh Mac, you can't even install Homebrew without them. Always do Step 1 first.
+- **uv is the linchpin**: Every hook uses `#!/usr/bin/env -S uv run --script` — the PEP 723 pattern that lets each script declare its own dependencies inline. Without `uv`, zero hooks run. This is the single most important tool to install.
+- **PEP 723 auto-resolution**: You technically don't need to pre-install Python packages (Step 6). `uv run --script` reads the `# dependencies = [...]` header and auto-resolves on first run. Pre-warming just avoids cold-start latency.
+- **Claude Desktop vs Claude Code**: Claude Desktop (the macOS app you already have) is for chat conversations. Claude Code (the CLI, the `claude` command in Terminal) is for coding with hooks, sub-agents, and tool use. This entire spec is for the CLI. They coexist and use the same Anthropic account.
+- **Global vs. project paths**: Global hooks should use `Path.home() / '.claude' / 'logs'` for logging. Project hooks use `Path.cwd() / 'logs'`. Be consistent to avoid polluting project directories with global log data.
+- **Security first**: The PreToolUse security hook is the one hook that should ALWAYS be global. It protects every project from accidental destructive commands and `.env` leakage.
+- **Incremental setup**: You don't need to do everything at once. Steps 1-12 give you a fully functional setup with global hooks. Steps 13-18 are enhancements (per-project patterns, Ollama, MCP, observability) you can add as needed.
+- **Estimated disk usage**:
+  | Component | Size |
+  |-----------|------|
+  | Xcode CLI Tools | ~1.5GB |
+  | Homebrew + formulae | ~500MB |
+  | Node.js + npm | ~100MB |
+  | Bun | ~50MB |
+  | uv + Python 3.13 | ~150MB |
+  | Claude Code CLI | ~50MB |
+  | Python packages (cached) | ~50MB |
+  | Ollama + llama3.2:3b (optional) | ~2.5GB |
+  | Ollama + gpt-oss:20b (optional) | ~12GB |
+  | **Total (without Ollama)** | **~2.4GB** |
+  | **Total (with small Ollama model)** | **~5GB** |
